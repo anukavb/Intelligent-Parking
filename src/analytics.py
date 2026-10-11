@@ -5,7 +5,14 @@ import json
 from pathlib import Path
 
 
-def summarize(history: list[dict], n_slots: int, fps: float, parameters: dict, display_fps: float = 0.0) -> dict:
+def summarize(
+    history: list[dict],
+    n_slots: int,
+    fps: float,
+    parameters: dict,
+    display_fps: float = 0.0,
+    frame_count: int | None = None,
+) -> dict:
     """Summarize occupancy histories using frame-derived video time.
 
     State durations use the next update timestamp (or video duration) as the
@@ -13,7 +20,7 @@ def summarize(history: list[dict], n_slots: int, fps: float, parameters: dict, d
     """
     if fps <= 0:
         raise ValueError("fps must be positive")
-    frames = max((item["frame"] for item in history), default=-1) + 1
+    frames = frame_count if frame_count is not None else max((item["frame"] for item in history), default=-1) + 1
     duration = frames / fps
     ordered = sorted(history, key=lambda item: item["frame"])
     events, sessions = [], []
