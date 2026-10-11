@@ -1,11 +1,14 @@
 # Project overview
 
-Intelligent Parking detects cars in recorded CCTV footage, marks manually defined parking zones as occupied or available, and provides a web page that routes a driver to the nearest available slot.
+Intelligent Parking detects vehicles in CCTV footage, marks manually defined parking zones as occupied or available, and provides a web page that routes a driver to the nearest available slot. The repository includes a paced live monitor, a sequential offline mode, a local dashboard, and tools for labeling and evaluating detector decisions.
 
 ## Repository layout
 
 - `src/` contains the frame extractor, zone-selection interface, YOLO detector, and shared parking logic.
 - `web/` contains the route-finder page source, its build script, and the occupancy extractor.
+- `app/` provides a local Flask dashboard for video upload/source selection, zone editing, live display, events, and downloads.
+- `tools/` contains manual frame labeling, cached YOLO detection, evaluation, parameter sweeps, and throughput benchmarking.
+- `tests/` covers geometry, smoothing, runners, zone helpers, and dashboard API behavior.
 - `data/parking1/` contains the sample video, reference frame, zone definitions, and web occupancy data.
 - `outputs/` receives generated detector videos and is excluded from Git.
 - `docs/index.html` is the generated, self-contained GitHub Pages page.
@@ -25,4 +28,14 @@ The sample `data/parking1/img_0.jpg`, `data/parking1/bounding_boxes.json`, and `
 
 ## Detection details
 
-The detector uses the YOLO11 small model with COCO class 2 (car). It computes each detected car's bounding-box centroid and uses OpenCV's point-in-polygon test to determine whether a slot is occupied. It then draws green available zones, red occupied zones, detected centroids, and occupancy counts on the output frames.
+The default engine uses YOLO11 small and COCO vehicle classes 2, 3, 5, and 7. It approximates a vehicle's ground footprint with the bottom 40% of its detection box, then assigns it to the slot with the greatest footprint overlap if that ratio is at least 0.30. A runner-up overlap of at least 0.25 is reported as a possible straddler. `--centroid` provides the original centroid-in-polygon behavior for ablation comparisons.
+
+Each slot maintains a smoothed occupancy evidence value updated once per inference as `e <- e + alpha * (observation - e)`. The defaults are `alpha=0.3`, occupied threshold `on=0.65`, and free threshold `off=0.35`; hysteresis retains the current state between those thresholds. `--no-smoothing` bypasses this state machine. Optional ROI inference crops to the zone bounds plus a margin; live mode separates source-paced display from inference and can drop frames to stay responsive, while offline mode processes sequentially and is intended for repeatable comparisons.
+
+## Labeling and evaluation
+
+`tools/label_frames.py` writes a CSV of manually labeled `(frame, slot, occupied)` observations under `outputs/`. `tools/cache_detections.py` stores one compressed set of YOLO boxes per frame so geometry, confidence, and smoothing configurations can be replayed without repeated model inference. The cache stores detections down to confidence 0.25, so evaluation cannot test lower thresholds unless a new cache is produced with a lower floor.
+
+`tools/evaluate.py` reports occupied-positive precision, recall, F1, accuracy, and a TP/FP/FN/TN confusion matrix on labeled slots, along with raw/smoothed state flips. `tools/sweep.py` runs a Cartesian grid of decision settings, ranks by F1 then accuracy and fewer smoothed flips, and writes the best configuration to `outputs/tuning/best_params.json`. Inference settings such as model, ROI, and image size are fixed when caching; the confidence threshold can only be raised above the cache floor. `src/detector.py --use-tuned` loads the selected configuration. `tools/benchmark.py` measures model inference latency and throughput for a selected video/model/image size.
+
+Evaluation is only as representative as the manual labels. Labels and tuning results are generated under ignored `outputs/` and should not be confused with the included occupancy sample. The Tkinter zone selector and browser dashboard still need manual interaction checks on a desktop environment; automated tests exercise core logic and dashboard endpoints, not full usability or accessibility.
