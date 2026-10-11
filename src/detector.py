@@ -70,6 +70,7 @@ def _print_summary(summary: dict):
         ("Raw/smoothed flips", f"{summary.get('flips_raw', 0)} / {summary.get('flips_smoothed', 0)}"),
         ("Mean inference", f"{summary.get('mean_inference_ms', 0):.1f} ms"),
         ("Inference/display", f"{summary.get('effective_inference_hz', 0):.2f} / {summary.get('display_fps', 0):.2f} Hz"),
+        ("Mean/p95 lag", f"{summary.get('mean_lag_ms', 0):.1f} / {summary.get('p95_lag_ms', 0):.1f} ms"),
         ("Runtime", f"{summary.get('runtime_s', 0):.2f} s"),
     )
     width = max(len(key) for key, _ in rows)
@@ -158,14 +159,7 @@ def main(argv=None):
             runner.raise_if_failed()
         finally:
             cv2.destroyAllWindows()
-        frame, meta = runner.latest()
-        history = list(runner._history)
-        from analytics import summarize
-
-        summary = summarize(
-            history, len(zones), runner.source_fps, runner.parameters,
-            meta.get("display_fps", 0.0), runner.source_frame_count,
-        )
+        summary = json.loads((output_dir / "summary.json").read_text(encoding="utf-8"))
     _print_summary(summary)
     print(f"Output directory: {output_dir}")
     if args.publish:

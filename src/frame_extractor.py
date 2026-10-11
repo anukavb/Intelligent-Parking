@@ -1,73 +1,68 @@
-# =============================================================================
-# frame_extractor.py
-# -----------------------------------------------------------------------------
-# Purpose : Extracts a sample frame from the input parking lot video.
-#           Run this FIRST to get a reference image before defining parking
-#           zones in zone_selector.py.
-#
-# Output  : data/parking1/img_0.jpg
-# Usage   : py src/frame_extractor.py
-# =============================================================================
+"""Extract a processing-size reference frame and dimensions for one video."""
 
-import cv2
-import time
+import argparse
+import json
 from pathlib import Path
 
-# ── Configuration ─────────────────────────────────────────────────────────────
+import cv2
 
 ROOT = Path(__file__).resolve().parents[1]
-
-# Path to the input parking lot video
 VIDEO_PATH = ROOT / "data" / "parking1" / "parking1.mp4"
+OUTPUT_PATH = ROOT / "data" / "parking1" / "img_0.jpg"
+PROCESSING_WIDTH = 1080
 
-# Path template for saving extracted frames  (%d is replaced by frame index)
-OUTPUT_PATH = ROOT / "data" / "parking1" / "img_%d.jpg"
 
-# How many frames to extract (1 = just a single reference image)
-MAX_FRAMES = 1
+def processing_dimensions(source_width: int, source_height: int) -> tuple[int, int]:
+    """Scale a source to width 1080 and round its aspect-ratio height up to even pixels."""
+    if source_width <= 0 or source_height <= 0:
+        raise ValueError("source dimensions must be positive")
+    height = round(PROCESSING_WIDTH * source_height / source_width)
+    height += height % 2
+    return PROCESSING_WIDTH, height
 
-# Only process every Nth frame (3 = skip 2, process 1) to avoid near-duplicates
-FRAME_SKIP = 3
 
-# ── Main extraction loop ───────────────────────────────────────────────────────
+def extract_frame(video: str | Path, name: str, frame_index: int = 0) -> Path:
+    """Extract the selected video frame and persist its processing dimensions."""
+    if frame_index < 0:
+        raise ValueError("frame index must be non-negative")
+    capture = cv2.VideoCapture(str(video))
+    if not capture.isOpened():
+        capture.release()
+        raise OSError(f"Unable to open video: {video}")
+    try:
+        source_width = int(capture.get(cv2.CAP_PROP_FRAME_WIDTH))
+        source_height = int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        width, height = processing_dimensions(source_width, source_height)
+        capture.set(cv2.CAP_PROP_POS_FRAMES, frame_index)
+        ok, frame = capture.read()
+        if not ok:
+            raise ValueError(f"Unable to read frame {frame_index} from {video}")
+        resized = cv2.resize(frame, (width, height))
+    finally:
+        capture.release()
+    data_dir = ROOT / "data" / name
+    data_dir.mkdir(parents=True, exist_ok=True)
+    output = data_dir / "img_0.jpg"
+    if not cv2.imwrite(str(output), resized):
+        raise OSError(f"Unable to write reference frame: {output}")
+    meta = {"width": width, "height": height}
+    (data_dir / "meta.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
+    print(f"Saved {output} at {width}x{height}; metadata: {data_dir / 'meta.json'}")
+    return output
 
-cpt = 0        # counts how many frames have been saved
-count = 0      # counts total frames read from the video
 
-OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
-cap = cv2.VideoCapture(str(VIDEO_PATH))
+def main(argv=None):
+    """Parse the reference-frame extraction command."""
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--video", default=str(VIDEO_PATH))
+    parser.add_argument("--name")
+    parser.add_argument("--frame", type=int, default=0)
+    args = parser.parse_args(argv)
+    name = args.name or (Path(args.video).stem if args.video != str(VIDEO_PATH) else "parking1")
+    if not name or any(char not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_" for char in name):
+        raise ValueError("--name may contain only letters, digits, hyphens, and underscores")
+    extract_frame(args.video, name, args.frame)
 
-while cpt < MAX_FRAMES:
-    ret, frame = cap.read()
 
-    # Stop if the video ends before we reach MAX_FRAMES
-    if not ret:
-        break
-
-    count += 1
-
-    # Skip frames that aren't multiples of FRAME_SKIP
-    if count % FRAME_SKIP != 0:
-        continue
-
-    # Resize to a standard display resolution
-    frame = cv2.resize(frame, (1080, 600))
-
-    # Preview the frame on screen
-    cv2.imshow("Extracted Frame", frame)
-
-    # Save the frame as a JPEG image
-    cv2.imwrite(str(OUTPUT_PATH) % cpt, frame)
-
-    time.sleep(0.01)  # small pause so the window can render
-    cpt += 1
-
-    # Press ESC to abort early
-    if cv2.waitKey(5) & 0xFF == 27:
-        break
-
-# ── Cleanup ───────────────────────────────────────────────────────────────────
-cap.release()
-cv2.destroyAllWindows()
-
-print(f"Done. {cpt} frame(s) saved.")
+if __name__ == "__main__":
+    main()

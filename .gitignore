@@ -13,6 +13,10 @@ ENV/
 # Model weights and generated detector output
 *.pt
 outputs/
+videos/*
+!videos/.gitkeep
+*.npz
+uploads/
 
 # IDE and Editor files
 .idea/

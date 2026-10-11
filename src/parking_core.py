@@ -17,15 +17,14 @@
 # =============================================================================
 
 import json
-import cv2
-import numpy as np
 from pathlib import Path
-
-from ultralytics.solutions.solutions import LOGGER, BaseSolution
-from ultralytics.utils.plotting import Annotator
 
 ROOT = Path(__file__).resolve().parents[1]
 ZONES_JSON = ROOT / "data" / "parking1" / "bounding_boxes.json"
+try:
+    from .zones import split_row
+except ImportError:
+    from zones import split_row
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -45,7 +44,7 @@ class ParkingPtsSelection:
        display size).
     """
 
-    def __init__(self, zones_json=ZONES_JSON):
+    def __init__(self, zones_json=ZONES_JSON, image_path=None):
         """Bootstrap: verify tkinter is available, build the UI, start the event loop."""
         try:
             import tkinter as tk
@@ -59,9 +58,12 @@ class ParkingPtsSelection:
         # Store references to tkinter submodules for use in other methods
         self.tk, self.filedialog, self.messagebox = tk, filedialog, messagebox
         self.zones_json = zones_json
+        self.initial_image_path = image_path
 
         self.setup_ui()
         self.initialize_properties()
+        if self.initial_image_path:
+            self.load_image(self.initial_image_path)
         self.master.mainloop()  # blocks until the window is closed
 
     # ── UI construction ───────────────────────────────────────────────────────
@@ -82,16 +84,22 @@ class ParkingPtsSelection:
 
         for text, cmd in [
             ("Upload Image", self.upload_image),
-            ("Remove Last BBox", self.remove_last_bounding_box),
+            ("Mode: Single slot", self.toggle_mode),
+            ("Remove Last", self.remove_last_bounding_box),
             ("Save", self.save_to_json),
         ]:
-            self.tk.Button(button_frame, text=text, command=cmd).pack(side=self.tk.LEFT)
+            button = self.tk.Button(button_frame, text=text, command=cmd)
+            button.pack(side=self.tk.LEFT)
+            if text.startswith("Mode:"):
+                self.mode_button = button
 
     def initialize_properties(self):
         """Set default values for image, canvas, and bounding-box state."""
         self.image = self.canvas_image = None   # PIL Image and its Tk-compatible version
         self.rg_data = []                        # list of completed 4-point boxes
+        self.groups = []                         # each undo group is one slot or one row
         self.current_box = []                    # points collected for the box in progress
+        self.row_mode = False
         self.imgw = self.imgh = 0                # original image dimensions (for coordinate scaling)
         self.canvas_max_width = 1020             # canvas display limits
         self.canvas_max_height = 500
@@ -100,13 +108,16 @@ class ParkingPtsSelection:
 
     def upload_image(self):
         """Open a file dialog, load the chosen image, resize to fit the canvas, and display it."""
+        path = self.filedialog.askopenfilename(filetypes=[("Image Files", "*.png *.jpg *.jpeg")])
+        if not path:
+            return
+        self.load_image(path)
+
+    def load_image(self, path):
+        """Load and fit a reference image while retaining its original pixel dimensions."""
         from PIL import Image, ImageTk  # imported here because ImageTk requires an active Tk root
 
-        self.image = Image.open(
-            self.filedialog.askopenfilename(filetypes=[("Image Files", "*.png *.jpg *.jpeg")])
-        )
-        if not self.image:
-            return
+        self.image = Image.open(path)
 
         self.imgw, self.imgh = self.image.size
 
@@ -134,6 +145,7 @@ class ParkingPtsSelection:
 
         # Reset any previously drawn boxes when a new image is loaded
         self.rg_data.clear()
+        self.groups.clear()
         self.current_box.clear()
 
     # ── Point and box interaction ─────────────────────────────────────────────
@@ -151,9 +163,31 @@ class ParkingPtsSelection:
         )
 
         if len(self.current_box) == 4:
-            self.rg_data.append(self.current_box.copy())
-            self.draw_box(self.current_box)
+            points = self.current_box.copy()
+            if self.row_mode:
+                from tkinter import simpledialog
+
+                count = simpledialog.askinteger(
+                    "Slots in row", "Number of slots (1-40):",
+                    minvalue=1, maxvalue=40, parent=self.master,
+                )
+                if count is None:
+                    self.current_box.clear()
+                    self.redraw_canvas()
+                    return
+                group = split_row(points, count)
+            else:
+                group = [{"points": points}]
+            self.groups.append(group)
+            self.rg_data.extend(group)
+            for zone in group:
+                self.draw_box(zone["points"])
             self.current_box.clear()
+
+    def toggle_mode(self):
+        """Switch between drawing one slot and subdividing a whole row."""
+        self.row_mode = not self.row_mode
+        self.mode_button.config(text=f"Mode: {'Row' if self.row_mode else 'Single slot'}")
 
     def draw_box(self, box):
         """Draw a closed quadrilateral (blue lines) connecting the 4 points of a box."""
@@ -162,18 +196,19 @@ class ParkingPtsSelection:
 
     def remove_last_bounding_box(self):
         """Delete the most recently added box and refresh the canvas."""
-        if not self.rg_data:
+        if not self.groups:
             self.messagebox.showwarning("Warning", "No bounding boxes to remove.")
             return
-        self.rg_data.pop()
+        self.groups.pop()
+        self.rg_data = [zone for group in self.groups for zone in group]
         self.redraw_canvas()
 
     def redraw_canvas(self):
         """Clear and redraw the canvas image plus all currently stored boxes."""
         self.canvas.delete("all")
         self.canvas.create_image(0, 0, anchor=self.tk.NW, image=self.canvas_image)
-        for box in self.rg_data:
-            self.draw_box(box)
+        for zone in self.rg_data:
+            self.draw_box(zone["points"])
 
     # ── Persistence ───────────────────────────────────────────────────────────
 
@@ -189,11 +224,11 @@ class ParkingPtsSelection:
         scale_w = self.imgw / self.canvas.winfo_width()
         scale_h = self.imgh / self.canvas.winfo_height()
 
-        data = [
-            {"points": [(int(x * scale_w), int(y * scale_h)) for x, y in box]}
-            for box in self.rg_data
-        ]
+        data = [{
+            "points": [(int(x * scale_w), int(y * scale_h)) for x, y in zone["points"]]
+        } for zone in self.rg_data]
 
+        Path(self.zones_json).parent.mkdir(parents=True, exist_ok=True)
         with open(self.zones_json, "w") as f:
             json.dump(data, f, indent=4)
 
@@ -207,137 +242,30 @@ class ParkingPtsSelection:
 # CLASS 2 : ParkingManagement
 # ─────────────────────────────────────────────────────────────────────────────
 
-class ParkingManagement(BaseSolution):
-    """
-    Real-time parking occupancy monitor using YOLO and pre-defined zone polygons.
+class ParkingManagement:
+    """Compatibility wrapper that retains the faculty pipeline's public API."""
 
-    For each video frame:
-      1. Run YOLO detection (class 2 = car) via the parent BaseSolution.
-      2. For every detected car, compute its bounding-box centroid.
-      3. Test the centroid against every zone polygon using cv2.pointPolygonTest.
-      4. Colour zones green (available) or red (occupied) and overlay stats.
-    """
-
-    def __init__(self, **kwargs):
-        """
-        Load the zone definitions from JSON and set up colour constants.
-
-        Expected kwargs (passed through to BaseSolution + stored in self.CFG):
-            model     – path to YOLO weights, e.g. "yolo11s.pt"
-            classes   – list of COCO class IDs to detect, e.g. [2] for cars
-            json_file – path to bounding_boxes.json produced by zone_selector.py
-        """
-        super().__init__(**kwargs)
-
-        self.json_file = self.CFG["json_file"]
-        if self.json_file is None:
-            LOGGER.warning("❌ json_file argument missing. Parking region details required.")
-            raise ValueError("❌ Json file path cannot be empty")
-
-        # Load zone polygon definitions
-        with open(self.json_file) as f:
-            self.json = json.load(f)
-
-        # Running counters updated each frame
-        self.pr_info = {"Occupancy": 0, "Available": 0}
-
-        # Annotation colours (BGR)
-        self.arc = (0, 255, 0)    # available zone border  → green
-        self.occ = (0, 0, 255)    # occupied zone border   → red
-        self.dc  = (255, 0, 189)  # vehicle centroid dot   → pink/magenta
-
-    # ── Per-frame processing ──────────────────────────────────────────────────
+    def __init__(self, model="yolo11s.pt", classes=(2,), json_file=ZONES_JSON, **kwargs):
+        """Load saved zones and configure the shared engine for legacy callers."""
+        if json_file is None:
+            raise ValueError("json_file path cannot be empty")
+        try:
+            from .engine import ParkingEngine
+            from .zones import load_zones
+        except ImportError:
+            from engine import ParkingEngine
+            from zones import load_zones
+        self.json_file = Path(json_file)
+        self.json = load_zones(self.json_file)
+        self.engine = ParkingEngine(
+            self.json, model_path=model, classes=classes, **kwargs
+        )
+        self.model = self.engine.model
+        self.pr_info = {"Occupancy": 0, "Available": len(self.json)}
 
     def process_data(self, im0):
-        """
-        Run detection and occupancy analysis on a single frame.
-
-        Parameters
-        ----------
-        im0 : np.ndarray
-            BGR frame read from the video (already resized to 1080×600).
-
-        Returns
-        -------
-        np.ndarray
-            Annotated frame with zone overlays and occupancy text.
-        """
-        # Run YOLO tracking / detection; populates self.boxes and self.clss
-        self.extract_tracks(im0)
-
-        # Start assuming all slots are empty
-        es = len(self.json)   # empty slot count (decremented as cars are found)
-        fs = 0                # filled slot count
-
-        annotator = Annotator(im0, self.line_width)
-
-        for region in self.json:
-            # Convert the 4-point polygon to the shape OpenCV expects: (N, 1, 2)
-            pts_array = np.array(region["points"], dtype=np.int32).reshape((-1, 1, 2))
-
-            rg_occupied = False  # flag: has a car been found in this zone?
-
-            for box, cls in zip(self.boxes, self.clss):
-                # Centroid of the detected bounding box
-                xc = int((box[0] + box[2]) / 2)
-                yc = int((box[1] + box[3]) / 2)
-
-                # pointPolygonTest returns >= 0 if the point is inside or on the polygon
-                dist = cv2.pointPolygonTest(pts_array, (xc, yc), False)
-
-                if dist >= 0:
-                    # Draw a filled circle at the vehicle centroid
-                    cv2.circle(
-                        im0, (xc, yc),
-                        radius=self.line_width * 4,
-                        color=self.dc,
-                        thickness=-1
-                    )
-                    # Label the detected class (e.g. "car") near the centroid
-                    cv2.putText(
-                        im0,
-                        self.model.names[int(cls)],
-                        (xc, yc + 20),
-                        cv2.FONT_HERSHEY_SIMPLEX,
-                        0.5,
-                        (255, 255, 255),
-                        1
-                    )
-                    rg_occupied = True
-                    break  # one car is enough to mark the zone occupied; move on
-
-            # Update slot counters
-            if rg_occupied:
-                fs += 1
-                es -= 1
-
-            # Draw the zone polygon: red if occupied, green if available
-            cv2.polylines(
-                im0, [pts_array],
-                isClosed=True,
-                color=self.occ if rg_occupied else self.arc,
-                thickness=2
-            )
-
-        # Store updated counts
-        self.pr_info["Occupancy"] = fs
-        self.pr_info["Available"] = es
-
-        # Overlay occupancy statistics in the top-left corner
-        y_offset = 30
-        for key, value in self.pr_info.items():
-            label = f"{key}: {value}"
-            cv2.putText(
-                im0, label,
-                (10, y_offset),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.8,
-                (255, 255, 255),
-                2
-            )
-            y_offset += 30
-
-        # Call parent display hook (handles env-specific output, e.g. stream mode)
-        self.display_output(im0)
-
-        return im0
+        """Return the annotated frame while preserving the legacy method name."""
+        detections, decision = self.engine.step(im0)
+        self.pr_info["Occupancy"] = decision.counts["occupied"]
+        self.pr_info["Available"] = decision.counts["available"]
+        return self.engine.draw(im0, detections, decision)

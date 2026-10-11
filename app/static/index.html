@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Intelligent Parking · Live Monitor</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div><span class="eyebrow">PARKING OPERATIONS</span><h1>Intelligent Parking</h1></div>
+    <div class="status" id="status"><i></i><span>Ready</span></div>
+  </header>
+  <main>
+    <section class="panel source-panel">
+      <div class="section-title"><span class="step">01</span><div><h2>Source</h2><p>Choose a sample, camera, or video file.</p></div></div>
+      <div class="source-actions">
+        <button id="sample">Use sample · parking1</button>
+        <label class="dropzone" id="dropzone">Drop a video here or <b>browse</b>
+          <input id="upload" type="file" accept=".mp4,.avi,.mov,.mkv">
+        </label>
+        <div class="camera-entry"><input id="camera" type="number" min="0" value="0" aria-label="Camera index"><button id="use-camera">Use camera</button></div>
+      </div>
+      <p class="source-label" id="source-label">No source selected</p>
+    </section>
+
+    <section class="panel zones-panel">
+      <div class="section-title"><span class="step">02</span><div><h2>Zones</h2><p>Use saved zones or draw parking slots on the reference frame.</p></div></div>
+      <div class="zone-tools">
+        <button id="saved-zones" disabled>Use saved zones</button>
+        <button id="mode">Mode: Row</button>
+        <label>Slots in row <input id="row-count" type="number" min="1" max="40" value="4"></label>
+        <button id="undo" disabled>Undo</button>
+        <button id="clear" disabled>Clear</button>
+        <button class="primary" id="save-zones" disabled>Save zones</button>
+      </div>
+      <div class="canvas-wrap"><canvas id="zone-canvas"></canvas><div id="canvas-empty">Select a source to load its reference frame.</div></div>
+      <p class="hint" id="zone-hint">Click four corners in order: top-left, top-right, bottom-right, bottom-left.</p>
+    </section>
+
+    <section class="panel settings-panel">
+      <div class="section-title"><span class="step">03</span><div><h2>Settings</h2><p>Choose an inference model and occupancy behavior.</p></div></div>
+      <div class="settings-grid">
+        <label>Model <select id="model"><option value="s">YOLO11s</option><option value="n">YOLO11n</option></select></label>
+        <label>Slot rule <select id="rule"><option value="footprint">Footprint overlap</option><option value="centroid">Centroid (baseline)</option></select></label>
+        <label class="check"><input id="roi" type="checkbox"> Crop to parking-zone ROI</label>
+        <label class="check"><input id="smooth" type="checkbox" checked> Smooth occupancy</label>
+        <label class="check"><input id="cars-only" type="checkbox"> Cars only</label>
+      </div>
+      <button class="primary start" id="start" disabled>Start live monitor</button>
+      <button class="danger" id="stop" disabled>Stop session</button>
+    </section>
+
+    <section class="monitor-grid">
+      <div class="panel video-panel">
+        <div class="section-title compact"><div><h2>Live annotated video</h2><p>Display stays paced to the source while inference runs independently.</p></div></div>
+        <div class="video-frame"><img id="stream" alt="Live annotated parking lot"><div id="video-empty">Live video appears here after Start.</div></div>
+        <div class="downloads" id="downloads"></div>
+      </div>
+      <div class="panel metrics-panel">
+        <div class="section-title compact"><div><h2>Live occupancy</h2><p id="video-time">Waiting for a session</p></div></div>
+        <div class="counts"><div><span>OCCUPIED</span><strong id="occupied">—</strong></div><div><span>AVAILABLE</span><strong id="available">—</strong></div></div>
+        <div id="lot-full" hidden>LOT FULL</div>
+        <div id="chips" class="chips"></div>
+        <div class="stats"><span>Inference <b id="inference">—</b></span><span>Display <b id="display">—</b></span><span>Lag <b id="lag">—</b></span></div>
+        <canvas id="chart" width="460" height="130" aria-label="Occupancy over time"></canvas>
+      </div>
+    </section>
+  </main>
+  <div class="toast" id="toast" role="status"></div>
+  <script src="/static/app.js"></script>
+</body>
+</html>

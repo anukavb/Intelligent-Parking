@@ -1,27 +1,32 @@
-# =============================================================================
-# zone_selector.py
-# -----------------------------------------------------------------------------
-# Purpose : Launches an interactive Tkinter GUI that lets you draw parking
-#           zone polygons on a reference image.  Each zone is defined by
-#           exactly 4 mouse-click points.  The coordinates are saved to
-#           bounding_boxes.json, which is consumed by detector.py at runtime.
-#
-# Run AFTER frame_extractor.py has produced a reference image.
-# Usage   : py src/zone_selector.py
-#
-# Steps inside the GUI
-#   1. Click "Upload Image" → open the reference frame (e.g. img_0.jpg)
-#   2. Click 4 corners of a parking slot → a blue box appears
-#   3. Repeat for every slot in the lot
-#   4. Click "Remove Last BBox" to undo the most recent box if needed
-#   5. Click "Save" → writes bounding_boxes.json
-# =============================================================================
+"""Launch the interactive single-slot or row-based zone selector."""
 
+import argparse
 from pathlib import Path
+
 from parking_core import ParkingPtsSelection
 
 ROOT = Path(__file__).resolve().parents[1]
 ZONES_JSON = ROOT / "data" / "parking1" / "bounding_boxes.json"
 
-# Launch the GUI.  Execution blocks here until the window is closed.
-ParkingPtsSelection(zones_json=ZONES_JSON)
+
+def main(argv=None):
+    """Open the parking1 file chooser or load the selected dataset's reference image."""
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--name", help="data set name; opens data/<name>/img_0.jpg")
+    args = parser.parse_args(argv)
+    if args.name:
+        if any(char not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_" for char in args.name):
+            raise ValueError("--name may contain only letters, digits, hyphens, and underscores")
+        data_dir = ROOT / "data" / args.name
+        image_path = data_dir / "img_0.jpg"
+        zones_path = data_dir / "bounding_boxes.json"
+        if not image_path.is_file():
+            raise FileNotFoundError(f"Reference frame not found: {image_path}")
+    else:
+        image_path = None
+        zones_path = ZONES_JSON
+    ParkingPtsSelection(zones_json=zones_path, image_path=image_path)
+
+
+if __name__ == "__main__":
+    main()

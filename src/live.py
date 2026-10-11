@@ -125,6 +125,7 @@ class LiveRunner:
         self._frame_updates = {}
         self._inference_ticks = deque(maxlen=30)
         self._display_ticks = deque(maxlen=30)
+        self._lag_samples = deque(maxlen=300)
         self._start_time = None
         self._display_count = 0
 
@@ -213,6 +214,8 @@ class LiveRunner:
                     frame, dets, decision,
                     {"Inference": f"{meta['inference_ms']:.0f} ms", "Display": f"{display_fps:.1f} fps", "Lag": f"{meta['lag_ms']:.0f} ms"},
                 )
+                meta["lag_ms"] = max(0.0, (time.perf_counter() - t_capture) * 1000)
+                self._lag_samples.append(meta["lag_ms"])
                 with self._lock:
                     self._annotated = (annotated, meta)
                 if self._writer:
@@ -294,11 +297,17 @@ class LiveRunner:
                 history = list(self._history)
                 display_fps = self._rate(self._display_ticks)
             if self.output_dir is not None or self.record_path is not None:
-                _write_outputs(
+                report, _ = _write_outputs(
                     self.output_dir, self.record_path, history, updates,
                     self.source_frame_count, self.source_fps, len(self.engine.zones),
                     self.parameters, display_fps,
                 )
+                lag_samples = sorted(self._lag_samples)
+                report["runtime_s"] = time.perf_counter() - self._start_time
+                report["effective_inference_hz"] = self._rate(self._inference_ticks)
+                report["mean_lag_ms"] = sum(lag_samples) / len(lag_samples) if lag_samples else 0.0
+                report["p95_lag_ms"] = lag_samples[min(len(lag_samples) - 1, int(0.95 * len(lag_samples)))] if lag_samples else 0.0
+                (self.output_dir / "summary.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
             if self.record_path:
                 _transcode_h264(self.record_path)
         except Exception as error:
@@ -414,7 +423,10 @@ def run_offline(engine, source, stride=1, output_dir=None, record_path=None, pro
         {"mode": engine.mode, "classes": engine.classes, "conf": engine.conf, "imgsz": engine.imgsz, "smoothing": engine.smoothing, "stride": stride},
         index / elapsed if elapsed else 0.0,
     )
+    report["runtime_s"] = elapsed
+    report["effective_inference_hz"] = len(history) / elapsed if elapsed else 0.0
+    if output_dir is not None:
+        (Path(output_dir) / "summary.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
     if target:
         _transcode_h264(target)
-    report["runtime_s"] = elapsed
     return report
