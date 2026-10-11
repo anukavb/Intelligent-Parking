@@ -7,7 +7,7 @@
 #           bounding_boxes.json, which is consumed by detector.py at runtime.
 #
 # Run AFTER frame_extractor.py has produced a reference image.
-# Usage   : python zone_selector.py
+# Usage   : py src/zone_selector.py
 #
 # Steps inside the GUI
 #   1. Click "Upload Image" → open the reference frame (e.g. img_0.jpg)
@@ -17,7 +17,11 @@
 #   5. Click "Save" → writes bounding_boxes.json
 # =============================================================================
 
+from pathlib import Path
 from parking_core import ParkingPtsSelection
 
+ROOT = Path(__file__).resolve().parents[1]
+ZONES_JSON = ROOT / "data" / "parking1" / "bounding_boxes.json"
+
 # Launch the GUI.  Execution blocks here until the window is closed.
-ParkingPtsSelection()
+ParkingPtsSelection(zones_json=ZONES_JSON)

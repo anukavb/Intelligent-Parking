@@ -5,24 +5,23 @@
 #           Run this FIRST to get a reference image before defining parking
 #           zones in zone_selector.py.
 #
-# Output  : img_0.jpg  (saved in the same directory as the script)
-# Usage   : python frame_extractor.py
+# Output  : data/parking1/img_0.jpg
+# Usage   : py src/frame_extractor.py
 # =============================================================================
 
 import cv2
 import time
-import os
+from pathlib import Path
 
 # ── Configuration ─────────────────────────────────────────────────────────────
 
+ROOT = Path(__file__).resolve().parents[1]
+
 # Path to the input parking lot video
-VIDEO_PATH = r"parking1.mp4"
+VIDEO_PATH = ROOT / "data" / "parking1" / "parking1.mp4"
 
 # Path template for saving extracted frames  (%d is replaced by frame index)
-OUTPUT_PATH = r"img_%d.jpg"
-
-# Path template for the website's copy of the frame
-SITE_OUTPUT_PATH = r"docs/source/data/img_%d.jpg"
+OUTPUT_PATH = ROOT / "data" / "parking1" / "img_%d.jpg"
 
 # How many frames to extract (1 = just a single reference image)
 MAX_FRAMES = 1
@@ -35,7 +34,8 @@ FRAME_SKIP = 3
 cpt = 0        # counts how many frames have been saved
 count = 0      # counts total frames read from the video
 
-cap = cv2.VideoCapture(VIDEO_PATH)
+OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
+cap = cv2.VideoCapture(str(VIDEO_PATH))
 
 while cpt < MAX_FRAMES:
     ret, frame = cap.read()
@@ -56,10 +56,8 @@ while cpt < MAX_FRAMES:
     # Preview the frame on screen
     cv2.imshow("Extracted Frame", frame)
 
-    # Save the frame as a JPEG image (and a copy for the website)
-    cv2.imwrite(OUTPUT_PATH % cpt, frame)
-    os.makedirs(os.path.dirname(SITE_OUTPUT_PATH), exist_ok=True)
-    cv2.imwrite(SITE_OUTPUT_PATH % cpt, frame)
+    # Save the frame as a JPEG image
+    cv2.imwrite(str(OUTPUT_PATH) % cpt, frame)
 
     time.sleep(0.01)  # small pause so the window can render
     cpt += 1

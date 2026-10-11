@@ -1,7 +1,17 @@
-import json, sys, cv2, numpy as np
-d = sys.argv[1]
-zones = json.load(open(f"{d}/bounding_boxes.json"))
-cap = cv2.VideoCapture(f"{d}/output.mp4")
+import argparse, json, cv2, numpy as np
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+DATA_DIR = ROOT / "data" / "parking1"
+VIDEO_PATH = ROOT / "outputs" / "output.mp4"
+
+parser = argparse.ArgumentParser()
+parser.add_argument("data_dir", nargs="?", type=Path, default=DATA_DIR)
+parser.add_argument("video_path", nargs="?", type=Path, default=VIDEO_PATH)
+args = parser.parse_args()
+
+zones = json.loads((args.data_dir / "bounding_boxes.json").read_text(encoding="utf-8"))
+cap = cv2.VideoCapture(str(args.video_path))
 fps = cap.get(cv2.CAP_PROP_FPS); n = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 W,H = int(cap.get(3)), int(cap.get(4))
 print("output.mp4", W, H, fps, n)
@@ -24,4 +34,5 @@ while True:
 print("frames",i)
 A=np.array(frames); print("occupied per slot (fraction):", np.round(A.mean(0),2).tolist())
 print("changes in total occupied:", sorted(set(A.sum(1).tolist())))
-json.dump({"fps":round(fps,2),"frames":frames},open("data/occupancy.json","w"),separators=(",",":"))
+with (args.data_dir / "occupancy.json").open("w", encoding="utf-8") as occupancy_file:
+    json.dump({"fps":round(fps,2),"frames":frames},occupancy_file,separators=(",",":"))

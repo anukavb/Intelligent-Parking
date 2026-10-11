@@ -17,13 +17,15 @@
 # =============================================================================
 
 import json
-
 import cv2
 import numpy as np
-import os
+from pathlib import Path
 
 from ultralytics.solutions.solutions import LOGGER, BaseSolution
 from ultralytics.utils.plotting import Annotator
+
+ROOT = Path(__file__).resolve().parents[1]
+ZONES_JSON = ROOT / "data" / "parking1" / "bounding_boxes.json"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -43,7 +45,7 @@ class ParkingPtsSelection:
        display size).
     """
 
-    def __init__(self):
+    def __init__(self, zones_json=ZONES_JSON):
         """Bootstrap: verify tkinter is available, build the UI, start the event loop."""
         try:
             import tkinter as tk
@@ -56,6 +58,7 @@ class ParkingPtsSelection:
 
         # Store references to tkinter submodules for use in other methods
         self.tk, self.filedialog, self.messagebox = tk, filedialog, messagebox
+        self.zones_json = zones_json
 
         self.setup_ui()
         self.initialize_properties()
@@ -177,7 +180,7 @@ class ParkingPtsSelection:
     def save_to_json(self):
         """
         Scale canvas-space coordinates back to original image resolution and
-        write all boxes to bounding_boxes.json.
+        write all boxes to data/parking1/bounding_boxes.json.
 
         Scaling is necessary because the image was downsized to fit the canvas;
         the JSON must store true pixel coordinates so they align with the full-
@@ -191,17 +194,12 @@ class ParkingPtsSelection:
             for box in self.rg_data
         ]
 
-        with open("bounding_boxes.json", "w") as f:
-            json.dump(data, f, indent=4)
-
-        os.makedirs("docs/source/data", exist_ok=True)
-        with open("docs/source/data/bounding_boxes.json", "w") as f:
+        with open(self.zones_json, "w") as f:
             json.dump(data, f, indent=4)
 
         self.messagebox.showinfo(
             "Success",
-            "Bounding boxes saved to bounding_boxes.json\n"
-            "and docs/source/data/bounding_boxes.json",
+            f"Bounding boxes saved to {self.zones_json}",
         )
 
 
