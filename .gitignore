@@ -1,6 +1,7 @@
 # Byte-compiled / optimized files
 __pycache__/
 *.py[cod]
+*.pyc
 *$py.class
 
 # Virtual environments
@@ -8,6 +9,10 @@ venv/
 .venv/
 env/
 ENV/
+
+# Model weights and generated detector output
+*.pt
+outputs/
 
 # IDE and Editor files
 .idea/
