@@ -26,6 +26,14 @@ MAX_UPLOAD_BYTES = 2 * 1024**3
 NAME_PATTERN = re.compile(r"^[A-Za-z0-9_-]+$")
 
 
+def json_error(message: str, hint: str | None = None, status: int = 400):
+    """Return a single error payload shape that the UI can render verbosely."""
+    payload = {"error": message}
+    if hint:
+        payload["hint"] = hint
+    return jsonify(payload), status
+
+
 def create_app(repo_root: str | Path = ROOT, engine_factory=ParkingEngine, runner_factory=LiveRunner):
     """Create an isolated dashboard app whose source registry is process-local."""
     root = Path(repo_root).resolve()
@@ -55,7 +63,15 @@ def create_app(repo_root: str | Path = ROOT, engine_factory=ParkingEngine, runne
 
     @app.errorhandler(413)
     def upload_too_large(_error):
-        return jsonify(error="Video upload exceeds the 2 GB limit."), 413
+        return json_error("Video upload exceeds the 2 GB limit.", "Try a smaller file or reduce the uploaded size.", 413)
+
+    @app.errorhandler(404)
+    def not_found(_error):
+        return json_error("The requested page or API route was not found.", "Check the URL and try again.", 404)
+
+    @app.errorhandler(500)
+    def server_error(_error):
+        return json_error("The server ran into an unexpected problem.", "Retry the action and check the server log if it keeps failing.", 500)
 
     @app.post("/api/source")
     def select_source():
@@ -67,12 +83,12 @@ def create_app(repo_root: str | Path = ROOT, engine_factory=ParkingEngine, runne
         elif kind == "camera":
             index = payload.get("index")
             if not isinstance(index, int) or index < 0:
-                return jsonify(error="Camera index must be a non-negative integer."), 400
+                return json_error("Camera index must be a non-negative integer.", "Choose a valid camera number to continue.", 400)
             name, source = f"camera_{index}", index
         else:
-            return jsonify(error="kind must be 'sample' or 'camera'."), 400
+            return json_error("kind must be 'sample' or 'camera'.", "Pick a sample or a camera index from the dashboard.", 400)
         if isinstance(source, Path) and not source.is_file():
-            return jsonify(error=f"Sample video not found: {source}"), 404
+            return json_error(f"Sample video not found: {source}", "The sample file is missing from the project data folder.", 404)
         with state_lock:
             sources[name] = str(source) if isinstance(source, Path) else source
         return jsonify(name=name, saved_zones=(data_dir(name) / "bounding_boxes.json").is_file())
@@ -81,21 +97,21 @@ def create_app(repo_root: str | Path = ROOT, engine_factory=ParkingEngine, runne
     def upload_video():
         uploaded = request.files.get("video")
         if uploaded is None or not uploaded.filename:
-            return jsonify(error="Select a video file to upload."), 400
+            return json_error("Select a video file to upload.", "Choose a valid MP4, AVI, MOV, or MKV file.", 400)
         filename = secure_filename(uploaded.filename)
         suffix = Path(filename).suffix.lower()
         if not filename or suffix not in ALLOWED_EXTENSIONS:
-            return jsonify(error="Supported video formats are MP4, AVI, MOV, and MKV."), 400
+            return json_error("Supported video formats are MP4, AVI, MOV, and MKV.", "The file type is not accepted by the dashboard.", 400)
         videos_dir = root / "videos"
         videos_dir.mkdir(parents=True, exist_ok=True)
         destination = videos_dir / filename
         if destination.exists():
-            return jsonify(error="A video with that safe filename already exists."), 409
+            return json_error("A video with that safe filename already exists.", "Use a different file name or remove the old upload.", 409)
         uploaded.save(destination)
         name = checked_name(Path(filename).stem)
         if name in sources and name != "parking1":
             destination.unlink(missing_ok=True)
-            return jsonify(error="A source with that video name is already registered."), 409
+            return json_error("A source with that video name is already registered.", "Choose another filename or delete the old source first.", 409)
         with state_lock:
             sources[name] = str(destination)
         return jsonify(name=name, filename=filename, saved_zones=(data_dir(name) / "bounding_boxes.json").is_file())
@@ -106,7 +122,7 @@ def create_app(repo_root: str | Path = ROOT, engine_factory=ParkingEngine, runne
         with state_lock:
             source = sources.get(name)
         if source is None:
-            return jsonify(error="Select or upload this source first."), 404
+            return json_error("Select or upload this source first.", "Choose a valid source from the dashboard before selecting zones.", 404)
         folder = data_dir(name)
         saved_image = folder / "img_0.jpg"
         if name == "parking1" and saved_image.is_file():
@@ -114,19 +130,19 @@ def create_app(repo_root: str | Path = ROOT, engine_factory=ParkingEngine, runne
         capture = cv2.VideoCapture(source)
         if not capture.isOpened():
             capture.release()
-            return jsonify(error=f"Unable to open video source for {name}."), 400
+            return json_error(f"Unable to open video source for {name}.", "The chosen file may be unreadable or corrupted.", 400)
         try:
             ok, frame = capture.read()
         finally:
             capture.release()
         if not ok:
-            return jsonify(error="Could not read a reference frame from the selected source."), 400
+            return json_error("Could not read a reference frame from the selected source.", "The video may be empty or not readable by OpenCV.", 400)
         height, width = frame.shape[:2]
         process_width, process_height = processing_dimensions(width, height)
         resized = cv2.resize(frame, (process_width, process_height))
         folder.mkdir(parents=True, exist_ok=True)
         if not cv2.imwrite(str(saved_image), resized):
-            return jsonify(error=f"Unable to save reference frame: {saved_image}"), 500
+            return json_error(f"Unable to save reference frame: {saved_image}", "The reference frame could not be written to disk.", 500)
         (folder / "meta.json").write_text(
             json.dumps({"width": process_width, "height": process_height}, indent=2), encoding="utf-8"
         )
@@ -146,15 +162,15 @@ def create_app(repo_root: str | Path = ROOT, engine_factory=ParkingEngine, runne
         payload = request.get_json(silent=False)
         zones = payload.get("zones") if isinstance(payload, dict) else None
         if not isinstance(zones, list) or not zones or len(zones) > 1000:
-            return jsonify(error="zones must be a non-empty list of at most 1000 polygons."), 400
+            return json_error("zones must be a non-empty list of at most 1000 polygons.", "Draw a valid parking-slot polygon for each slot.", 400)
         for zone in zones:
             points = zone.get("points") if isinstance(zone, dict) else None
             if not isinstance(points, list) or len(points) != 4 or any(
                 not isinstance(point, list) or len(point) != 2 or
-            any(not isinstance(value, (int, float)) or not math.isfinite(value) for value in point)
+                any(not isinstance(value, (int, float)) or not math.isfinite(value) for value in point)
                 for point in points
             ):
-                return jsonify(error="Each zone must contain exactly four 2D points."), 400
+                return json_error("Each zone must contain exactly four 2D points.", "Use a quadrilateral outline for each parking bay.", 400)
         path = data_dir(name) / "bounding_boxes.json"
         save_zones(path, zones)
         return jsonify(saved=True, count=len(zones))
@@ -165,23 +181,23 @@ def create_app(repo_root: str | Path = ROOT, engine_factory=ParkingEngine, runne
         name = checked_name(payload.get("name", ""))
         zones_path = data_dir(name) / "bounding_boxes.json"
         if not zones_path.is_file():
-            return jsonify(error="Save or select parking zones before starting."), 400
+            return json_error("Save or select parking zones before starting.", "Mark the parking bays first, then start the session.", 400)
         with state_lock:
             if active["starting"]:
-                return jsonify(error="A parking session is already starting."), 409
+                return json_error("A parking session is already starting.", "Wait for the current run to finish before starting another.", 409)
             old_runner = active["runner"]
             if old_runner is not None and not old_runner.done:
-                return jsonify(error="A parking session is already active."), 409
+                return json_error("A parking session is already active.", "Stop the active video before starting a new one.", 409)
             source = sources.get(name)
         if source is None:
-            return jsonify(error="The video source is no longer registered."), 404
+            return json_error("The video source is no longer registered.", "Re-select the source and try again.", 404)
         settings = payload.get("settings", {})
         model_size = settings.get("model", "s")
         if model_size not in {"n", "s"}:
-            return jsonify(error="model must be 'n' or 's'."), 400
+            return json_error("model must be 'n' or 's'.", "Choose a YOLO11n or YOLO11s model.", 400)
         with state_lock:
             if active["starting"]:
-                return jsonify(error="A parking session is already starting."), 409
+                return json_error("A parking session is already starting.", "Wait for the current run to finish before starting another.", 409)
             active["starting"] = True
         try:
             meta_path = data_dir(name) / "meta.json"
@@ -214,7 +230,7 @@ def create_app(repo_root: str | Path = ROOT, engine_factory=ParkingEngine, runne
     def stop_monitor():
         runner, _name = current_runner()
         if runner is None:
-            return jsonify(error="No parking session is active."), 409
+            return json_error("No parking session is active.", "Start a live monitor before trying to stop it.", 409)
         runner.stop()
         return jsonify(stopped=True)
 
@@ -230,7 +246,7 @@ def create_app(repo_root: str | Path = ROOT, engine_factory=ParkingEngine, runne
     def events():
         runner, name = current_runner()
         if runner is None:
-            return jsonify(error="No parking session is active."), 409
+            return json_error("No parking session is active.", "Start a live monitor before streaming occupancy updates.", 409)
 
         @stream_with_context
         def generate():
@@ -264,7 +280,7 @@ def create_app(repo_root: str | Path = ROOT, engine_factory=ParkingEngine, runne
     def stream():
         runner, _name = current_runner()
         if runner is None:
-            return jsonify(error="No parking session is active."), 409
+            return json_error("No parking session is active.", "Start a live monitor before streaming frames.", 409)
 
         @stream_with_context
         def generate():
@@ -299,10 +315,10 @@ def create_app(repo_root: str | Path = ROOT, engine_factory=ParkingEngine, runne
         name = checked_name(name)
         allowed = {"output.mp4", "events.csv", "sessions.csv", "summary.json"}
         if filename not in allowed:
-            return jsonify(error="Unknown output file."), 404
+            return json_error("Unknown output file.", "Choose one of the generated dashboard artifacts.", 404)
         path = root / "outputs" / name / filename
         if not path.is_file():
-            return jsonify(error="Output is not ready yet."), 404
+            return json_error("Output is not ready yet.", "Wait until the analysis has completed before downloading it.", 404)
         return send_file(path, as_attachment=True)
 
     return app

@@ -57,6 +57,15 @@ class ParkingEngine:
         roi=DEFAULTS["roi"],
         roi_margin=DEFAULTS["roi_margin"],
         detector: Callable | None = None,
+        per_class_conf: dict[int, float] | None = None,
+        size_filter: bool = DEFAULTS["size_filter"],
+        size_ratio_min: float = DEFAULTS["size_ratio_min"],
+        size_ratio_max: float = DEFAULTS["size_ratio_max"],
+        aspect_ratio_min: float = DEFAULTS["aspect_ratio_min"],
+        aspect_ratio_max: float = DEFAULTS["aspect_ratio_max"],
+        ignore_areas: list | None = None,
+        disabled_slots: list[int] | None = None,
+        show_only_touching: bool = DEFAULTS["show_only_touching"],
     ):
         if mode not in {"footprint", "centroid"}:
             raise ValueError("mode must be 'footprint' or 'centroid'")
@@ -73,6 +82,19 @@ class ParkingEngine:
         self.roi = roi
         self.roi_margin = roi_margin
         self.detector = detector
+        self.size_filter = bool(size_filter)
+        self.size_ratio_min = float(size_ratio_min)
+        self.size_ratio_max = float(size_ratio_max)
+        self.aspect_ratio_min = float(aspect_ratio_min)
+        self.aspect_ratio_max = float(aspect_ratio_max)
+        self.show_only_touching = bool(show_only_touching)
+        self.disabled_slots = set(int(slot) for slot in (disabled_slots or []))
+        default_per_class_conf = {int(k): float(v) for k, v in DEFAULTS["per_class_conf"].items()}
+        self.per_class_conf = default_per_class_conf if per_class_conf is None else {int(k): float(v) for k, v in per_class_conf.items()}
+        self.ignore_areas = [
+            np.asarray(area, dtype=np.float32).reshape(-1, 2)
+            for area in (ignore_areas or [])
+        ]
         self.model = None
         self.names: dict[int, str] = {}
         if detector is None:
@@ -85,6 +107,39 @@ class ParkingEngine:
         self.states = [0] * len(self.zones)
         self.last_detections = Detections(np.empty((0, 4)), np.empty(0), np.empty(0), 0.0, self.names)
         self.last_decision = self.decide(self.last_detections, update=False)
+
+    def _class_confidence_threshold(self, class_id: int) -> float:
+        """Return the per-class confidence floor for a detected object class."""
+        return float(self.per_class_conf.get(int(class_id), self.conf))
+
+    def _point_in_ignore_area(self, point: tuple[float, float]) -> bool:
+        """Check whether a box centre falls within any configured ignore polygon."""
+        if not self.ignore_areas:
+            return False
+        point = np.asarray(point, dtype=np.float32)
+        for polygon in self.ignore_areas:
+            if cv2.pointPolygonTest(polygon.reshape(-1, 1, 2), tuple(point), False) >= 0:
+                return True
+        return False
+
+    def _size_is_valid(self, box: np.ndarray) -> bool:
+        """Reject obviously wrong detections using slot-relative footprint limits."""
+        if not self.size_filter or not self.zones:
+            return True
+        width = float(box[2] - box[0])
+        height = float(box[3] - box[1])
+        if width <= 0 or height <= 0:
+            return False
+        median_area = float(np.median([cv2.contourArea(np.asarray(zone, dtype=np.float32).reshape(-1, 1, 2)) for zone in self.zones]))
+        area = width * height
+        if median_area <= 0:
+            return True
+        if area < self.size_ratio_min * median_area or area > self.size_ratio_max * median_area:
+            return False
+        aspect = width / height if height > 0 else 1.0
+        if aspect < self.aspect_ratio_min or aspect > self.aspect_ratio_max:
+            return False
+        return True
 
     def _roi_bounds(self, frame: np.ndarray) -> tuple[int, int, int, int]:
         height, width = frame.shape[:2]
@@ -137,6 +192,22 @@ class ParkingEngine:
         if left or top:
             boxes[:, (0, 2)] += left
             boxes[:, (1, 3)] += top
+        keep = np.ones(len(boxes), dtype=bool)
+        if self.classes is not None:
+            keep &= np.isin(classes.astype(int), self.classes)
+        for index, (class_id, confidence) in enumerate(zip(classes, confidences)):
+            if confidence < self._class_confidence_threshold(int(class_id)):
+                keep[index] = False
+        if self.size_filter:
+            keep &= np.array([self._size_is_valid(box) for box in boxes], dtype=bool)
+        if self.ignore_areas:
+            keep &= np.array([
+                not self._point_in_ignore_area(((box[0] + box[2]) / 2.0, (box[1] + box[3]) / 2.0))
+                for box in boxes
+            ], dtype=bool)
+        boxes = boxes[keep]
+        classes = classes[keep]
+        confidences = confidences[keep]
         return Detections(boxes, classes, confidences, elapsed, names)
 
     def decide(self, dets: Detections, update: bool = True) -> Decision:
@@ -152,16 +223,28 @@ class ParkingEngine:
             raw, assigned, straddlers = assign_vehicles(
                 boxes, self.zones, self.footprint_frac, self.overlap_threshold, self.straddle_threshold
             )
+        if self.disabled_slots:
+            raw = list(raw)
+            for slot_index in sorted(self.disabled_slots):
+                if slot_index < len(raw):
+                    raw[slot_index] = 0
         states = self.state_machine.update(raw) if self.smoothing and update else (
             self.state_machine.states.copy() if self.smoothing else raw.copy()
         )
+        if self.disabled_slots:
+            states = list(states)
+            for slot_index in sorted(self.disabled_slots):
+                if slot_index < len(states):
+                    states[slot_index] = 0
         if self.smoothing and update:
             self.states = states.copy()
         elif not self.smoothing:
             self.states = states.copy()
+        enabled_slots = [slot for slot in range(len(states)) if slot not in self.disabled_slots]
+        occupied = sum(states[slot] for slot in enabled_slots)
         return Decision(raw, states, assigned, straddlers, {
-            "occupied": sum(states),
-            "available": len(states) - sum(states),
+            "occupied": occupied,
+            "available": len(enabled_slots) - occupied,
         })
 
     def step(self, frame: np.ndarray) -> tuple[Detections, Decision]:
@@ -178,7 +261,11 @@ class ParkingEngine:
             points = np.round(zone).astype(np.int32).reshape(-1, 1, 2)
             color = (0, 0, 255) if decision.states[index] else (0, 210, 0)
             cv2.polylines(output, [points], True, color, 2)
+        assigned = {index for index, slot in enumerate(decision.assigned) if slot >= 0}
+        straddlers = {int(item["vehicle_index"]) for item in decision.straddlers}
         for index, box in enumerate(dets.boxes):
+            if self.show_only_touching and index not in assigned and index not in straddlers:
+                continue
             x1, y1, x2, y2 = np.round(box).astype(int)
             straddling = any(item["vehicle_index"] == index for item in decision.straddlers)
             color = (0, 165, 255) if straddling else (255, 255, 255)
