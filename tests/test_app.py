@@ -1,4 +1,5 @@
 import io
+import json
 
 import cv2
 import numpy as np
@@ -56,3 +57,69 @@ def test_dashboard_upload_zones_stream_events_stop_and_outputs(tmp_path):
     output_dir = tmp_path / "outputs" / "demo"
     for filename in ("output.mp4", "events.csv", "sessions.csv", "summary.json", "occupancy.json"):
         assert (output_dir / filename).is_file(), filename
+
+
+def test_upload_rejects_conflicting_and_unsafe_source_names(tmp_path):
+    app = create_app(tmp_path)
+    app.config.update(TESTING=True)
+    client = app.test_client()
+
+    conflict = client.post(
+        "/api/upload",
+        data={"video": (io.BytesIO(b"video"), "parking1.mp4")},
+        content_type="multipart/form-data",
+    )
+    assert conflict.status_code == 409
+    assert "error" in conflict.json and "hint" in conflict.json
+
+    unsafe = client.post(
+        "/api/upload",
+        data={"video": (io.BytesIO(b"video"), "lot.archive.mp4")},
+        content_type="multipart/form-data",
+    )
+    assert unsafe.status_code == 400
+    assert "error" in unsafe.json and "hint" in unsafe.json
+    assert not (tmp_path / "videos").exists()
+
+
+def test_events_use_engine_counts(tmp_path):
+    class RunnerStub:
+        done = True
+
+        def __init__(self, *_args, **_kwargs):
+            self.meta = {
+                "frame_idx": 0,
+                "states": [0, 0],
+                "counts": {"occupied": 1, "available": 0},
+            }
+
+        def start(self):
+            return self
+
+        def latest(self):
+            return None, self.meta
+
+    app = create_app(
+        tmp_path,
+        engine_factory=lambda *_args, **_kwargs: object(),
+        runner_factory=RunnerStub,
+    )
+    app.config.update(TESTING=True)
+    client = app.test_client()
+    uploaded = client.post(
+        "/api/upload",
+        data={"video": (io.BytesIO(b"video"), "lot.mp4")},
+        content_type="multipart/form-data",
+    )
+    assert uploaded.status_code == 200
+    zones = [{"points": [[0, 0], [10, 0], [10, 10], [0, 10]]}]
+    assert client.post("/api/zones/lot", json={"zones": zones}).status_code == 200
+    assert client.post("/api/start", json={"name": "lot"}).status_code == 200
+
+    events = client.get("/events", buffered=False)
+    first_event = next(events.response)
+    events.close()
+    payload = json.loads(first_event.removeprefix(b"data: ").strip())
+    assert payload["occupied"] == 1
+    assert payload["available"] == 0
+    assert payload["lot_full"] is True

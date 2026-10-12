@@ -22,7 +22,7 @@ DEFAULTS = {
     "roi": False,
     "roi_margin": 40,
     "size_filter": True,
-    "size_ratio_min": 0.25,
+    "size_ratio_min": 0.1,
     "size_ratio_max": 2.5,
     "aspect_ratio_min": 0.4,
     "aspect_ratio_max": 3.0,

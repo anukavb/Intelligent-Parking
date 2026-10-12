@@ -102,16 +102,22 @@ def create_app(repo_root: str | Path = ROOT, engine_factory=ParkingEngine, runne
         suffix = Path(filename).suffix.lower()
         if not filename or suffix not in ALLOWED_EXTENSIONS:
             return json_error("Supported video formats are MP4, AVI, MOV, and MKV.", "The file type is not accepted by the dashboard.", 400)
+        name = Path(filename).stem
+        if not NAME_PATTERN.fullmatch(name):
+            return json_error(
+                "The video filename must have a simple name before its extension.",
+                "Use only letters, digits, hyphens, or underscores in the filename.",
+                400,
+            )
+        with state_lock:
+            if name in sources:
+                return json_error("A source with that video name is already registered.", "Choose another filename to avoid replacing its zones or reference frame.", 409)
         videos_dir = root / "videos"
         videos_dir.mkdir(parents=True, exist_ok=True)
         destination = videos_dir / filename
         if destination.exists():
             return json_error("A video with that safe filename already exists.", "Use a different file name or remove the old upload.", 409)
         uploaded.save(destination)
-        name = checked_name(Path(filename).stem)
-        if name in sources and name != "parking1":
-            destination.unlink(missing_ok=True)
-            return json_error("A source with that video name is already registered.", "Choose another filename or delete the old source first.", 409)
         with state_lock:
             sources[name] = str(destination)
         return jsonify(name=name, filename=filename, saved_zones=(data_dir(name) / "bounding_boxes.json").is_file())
@@ -256,11 +262,14 @@ def create_app(repo_root: str | Path = ROOT, engine_factory=ParkingEngine, runne
                 if meta and meta.get("frame_idx") != previous_frame:
                     previous_frame = meta["frame_idx"]
                     states = meta.get("states", [])
+                    counts = meta.get("counts", {})
+                    occupied = counts.get("occupied", sum(states))
+                    available = counts.get("available", len(states) - sum(states))
                     event = {
                         "name": name,
-                        "occupied": sum(states),
-                        "available": len(states) - sum(states),
-                        "lot_full": bool(states) and all(states),
+                        "occupied": occupied,
+                        "available": available,
+                        "lot_full": occupied > 0 and available == 0,
                         "states": states,
                         "inference_ms": meta.get("inference_ms", 0),
                         "inference_hz": meta.get("inference_hz", 0),

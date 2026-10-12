@@ -11,10 +11,14 @@ function toast(message, error = false) {
   setTimeout(() => node.classList.remove("show"), 3500);
 }
 
+function errorMessage(result, fallback) {
+  return [result?.error, result?.hint].filter(Boolean).join(" ") || fallback;
+}
+
 async function requestJson(url, options = {}) {
   const response = await fetch(url, options);
   const result = await response.json();
-  if (!response.ok) throw new Error(result.error || `Request failed (${response.status})`);
+  if (!response.ok) throw new Error(errorMessage(result, `Request failed (${response.status})`));
   return result;
 }
 
@@ -86,7 +90,9 @@ async function setSource(name, label) {
   $("source-label").textContent = label;
   $("canvas-empty").hidden = true;
   const frameResponse = await fetch(`/api/source/${encodeURIComponent(name)}/frame`);
-  if (!frameResponse.ok) throw new Error((await frameResponse.json()).error || "Could not load source frame.");
+  if (!frameResponse.ok) {
+    throw new Error(errorMessage(await frameResponse.json(), "Could not load source frame."));
+  }
   background = new Image();
   background.src = URL.createObjectURL(await frameResponse.blob());
   await background.decode();
